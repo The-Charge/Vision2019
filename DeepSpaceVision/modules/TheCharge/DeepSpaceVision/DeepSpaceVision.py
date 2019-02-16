@@ -2,6 +2,7 @@ import libjevois as jevois
 import cv2
 import numpy as np
 import time
+import math
 
 ## Incorporating GRIP Pipeline into Jevois code, using templates from Anand Rajamani
 #
@@ -20,10 +21,39 @@ import time
 # @distribution Unrestricted
 # @restrictions None
 # @ingroup modules
+
 class DeepSpaceVision:
     # ###################################################################################################
     ## Constructor
     def __init__(self):
+    
+        # 3D Reconstruction constants
+        self.obj_points = [(-4.0, 0.0, 0.0),
+                      (-5.936295280756216, 0.5007600081088829, 0.0),
+                      (-7.313385303055644, -4.82405201397071, 0.0),
+                      (-5.377090022299429, -5.324812022079593, 0.0),
+                      
+                      (4.0, 0.0, 0.0),
+                      (5.936295280756216, 0.5007600081088829, 0.0),
+                      (7.313385303055644, -4.82405201397071, 0.0),
+                      (5.377090022299429, -5.324812022079593, 0.0)]
+        '''
+        self.obj_points = [(-5.936295280756216, 0.5007600081088829, 0.0),
+                           (-5.377090022299429, -5.324812022079593, 0.0),
+                           (5.377090022299429, -5.324812022079593, 0.0),
+                           (5.377090022299429, -5.324812022079593, 0.0)]
+        '''
+                      
+        self.cam_matrix = [[251.14969233879845, 0.0, 160],
+                      [0.0, 258.8135140705428, 120],
+                      [0.0, 0.0, 1.0]]
+                      
+        self.dist_coeff = []
+        
+        self.obj_points = np.float32(self.obj_points)
+        self.cam_matrix = np.float32(self.cam_matrix)
+        self.dist_coeff = np.float32(self.dist_coeff)
+        
         # Instantiate a JeVois Timer to measure our processing framerate:
         self.timer = jevois.Timer("processing timer", 100, jevois.LOG_INFO)
         
@@ -31,7 +61,7 @@ class DeepSpaceVision:
         self.frame = 0
         
         # GRIP constants
-        self.__blur_radius = 5.0229474757776655
+        self.__blur_radius = 1.0
 
         self.blur_output = None
 
@@ -60,9 +90,9 @@ class DeepSpaceVision:
         self.normalize_output = None
 
         self.__hsv_threshold_input = self.normalize_output
-        self.__hsv_threshold_hue = [66.36690647482014, 94.9130331623807]
+        self.__hsv_threshold_hue = [62.0, 94.9130331623807]
         self.__hsv_threshold_saturation = [0.0, 255.0]
-        self.__hsv_threshold_value = [41.384942893143105, 255.0]
+        self.__hsv_threshold_value = [20, 255.0]
 
         self.hsv_threshold_output = None
 
@@ -98,8 +128,8 @@ class DeepSpaceVision:
         self.__filter_contours_max_height = 1000.0
         self.__filter_contours_solidity = [0.0, 100]
         self.__filter_contours_max_vertices = 1000000.0
-        self.__filter_contours_min_vertices = 0.0
-        self.__filter_contours_min_ratio = 0.3
+        self.__filter_contours_min_vertices = 5.0
+        self.__filter_contours_min_ratio = 0.2
         self.__filter_contours_max_ratio = 0.9
 
         self.filter_contours_output = None
@@ -114,10 +144,10 @@ class DeepSpaceVision:
         # Start measuring image processing time (NOTE: does not account for input conversion time):
         self.timer.start()
         
-        # Get frames/s info from our timer:
+        # Get frames/s info from our timer
         fps = self.timer.stop()
         
-        jevois.sendSerial(str(time.time()))
+        self.findTargets(inimg)
 
         self.frame += 1
         
@@ -133,6 +163,8 @@ class DeepSpaceVision:
         # Start measuring image processing time (NOTE: does not account for input conversion time):
         self.timer.start()
         
+        outimg = self.findTargets(inimg)
+        
         # Convert our output image to video output format and send to host over USB:
         outframe.sendCv(outimg)
         
@@ -140,12 +172,12 @@ class DeepSpaceVision:
     
     # ###################################################################################################
     ## Process an image and processes the contours
-    def findTargets(source0):
-    
+    def findTargets(self, img):
         #GRIP CODE
+        
         # Step Blur0:
-        self.__blur_input = source0
-        (self.blur_output) = self.__blur(self.__blur_input, self.__blur_type, self.__blur_radius)
+        self.__blur_input = img
+        (self.blur_output) = self.__blur(self.__blur_input, self.__blur_radius)
 
         # Step CV_extractChannel0:
         self.__cv_extractchannel_src = self.blur_output
@@ -183,35 +215,102 @@ class DeepSpaceVision:
         # Step Filter_Contours0:
         self.__filter_contours_contours = self.find_contours_output
         (self.filter_contours_output) = self.__filter_contours(self.__filter_contours_contours, self.__filter_contours_min_area, self.__filter_contours_min_perimeter, self.__filter_contours_min_width, self.__filter_contours_max_width, self.__filter_contours_min_height, self.__filter_contours_max_height, self.__filter_contours_solidity, self.__filter_contours_max_vertices, self.__filter_contours_min_vertices, self.__filter_contours_min_ratio, self.__filter_contours_max_ratio)
+        
         #END GRIP CODE
         
-        contourNum = len(self.filter_contours_output)
-
-        # Sorts contours by the smallest area first
-        newContours = sortByArea(self.filter_contours_output)  
-
-        # Puts a timestamp on the serial output
-        toSend = self.timer
-
-        # Send the contour data over Serial
-        for i in range (contourNum):
-            cnt = newContours[i]
-            x,y,w,h = cv2.boundingRect(cnt) # Get the stats of the contour including width and height
+        # Sort contors from left to right on the screen
+        contours = sorted(self.filter_contours_output, key = lambda x: get_contour_extreme_points(x)[0])
+        
+        # Iterate through contours and store some of their values
+        contourInfo = []
+        
+        for cnt in contours:
             
-            # which contour, 0 is first
-            #toSend = 
+            # Coordinates of center of contour
+            cx, cy = get_contour_coords(cnt)
             
-            """
-            toSend = ("CON" + str(i) +  
-                     "area" + str(getArea(cnt)) +  # Area of contour
-                     "x" + str(round((getXcoord(cnt)*1000/320)-500, 2)) +  # x-coordinate of contour, -500 to 500 rounded to 2 decimal
-                     "y" + str(round(375-getYcoord(cnt)*750/240, 2)) +  # y-coordinate of contour, -375 to 375 rounded to 2 decimal
-                     "h" + str(round(h*750/240, 2)) +  # Height of contour, 0-750 rounded to 2 decimal
-                     "w" + str(round(w*1000/320, 2))) # Width of contour, 0-1000 rounded to 2 decimal
-            """
-
-        jevois.sendSerial(toSend)
-    
+            # Width and height
+            left, right, top, bottom = get_contour_extreme_points(cnt)
+            width = right[0]-left[0]
+            height = bottom[1]-top[1]
+            
+            # Contour's angle of rotation in range [-90, 90]
+            angle = get_contour_angle(cnt)
+            
+            # Store the contour information in a new list in order (contour, center, shape, angle)
+            contourInfo.append((cnt, (cx, cy), (width, height), angle))
+            
+            # Draw contour
+            cv2.drawContours(img, [cnt], 0, (255, 0, 0), 2)
+            
+            # Draw a circle around the center of the contour
+            cv2.circle(img, (cx, cy), 1, (0, 0, 0), 2)
+            
+            # Draw a line through the target
+            p1, p2 = line_through_contour(cnt)
+            cv2.line(img, p1, p2, (255, 255, 255), 1)
+        
+        # Information to send over serial
+        toSend = ""
+        
+        # Find target pairs
+        for i in range(len(contourInfo)-1):
+            
+            cnt_l, (cx_l, cy_l), (width_l, height_l), angle_l = contourInfo[i]
+            cnt_r, (cx_r, cy_r), (width_r, height_r), angle_r = contourInfo[i+1]
+            
+            # If the targets are pointed in the correct orientation: / \
+            if angle_l > 0 and angle_r < 0 and cx_l < cx_r:
+                img_points = []
+                    
+                l_left, l_right, l_top, l_bottom = get_contour_extreme_points(cnt_l)
+                img_points.append(l_right)
+                img_points.append(l_top)
+                img_points.append(l_left)
+                img_points.append(l_bottom)
+                
+                r_left, r_right, r_top, r_bottom = get_contour_extreme_points(cnt_r)
+                img_points.append(r_left)
+                img_points.append(r_top)
+                img_points.append(r_right)
+                img_points.append(r_bottom)
+                
+                #img_points.append(r_top)
+                
+                print("IMAGE POINTS")
+                for pt in img_points:
+                    print(pt)
+                
+                img_points = np.float32(img_points)
+                ret, rvec, tvec = cv2.solvePnP(self.obj_points, img_points, self.cam_matrix, self.dist_coeff)
+                
+                if ret:
+                    distance, angle1, angle2 = compute_output_values(rvec, tvec)
+                    x = int((cx_l+cx_r)/2)
+                    angle1_px = math.degrees(math.atan( (160 - x) / 251.1496923 ))
+                    toSend += '{:.4}in | {:.4}dg '.format(distance, angle1) + '| pixel angle1: {:.4}'.format(angle1_px)
+                
+                # Draw a box around both contours
+                rx, ry, rw, rh = rect = box_contours([cnt_l, cnt_r])
+                cv2.rectangle(img, rect, (0, 255, 255), 2)
+                
+                # Find the center of the two targets
+                tar_x, tar_y = (int(rx+rw/2), int(ry+rh/2))
+                
+                # Draw a circle in the middle of both contours
+                cv2.circle(img, (tar_x, tar_y), 2, (255, 255, 255), 4)
+                
+                # Append the target coordinates to the serial information - first character should not be a "/"
+                '''if toSend != "":
+                    toSend = toSend + ","
+                toSend = toSend + "{},{}".format(tar_x, tar_y)'''
+            
+        # Don't send an empty string
+        if toSend != "":
+            jevois.sendSerial(toSend)
+        
+        return img
+        
     # OpenCV functions generated by GRIP
     @staticmethod
     def __blur(src, radius):
@@ -331,7 +430,7 @@ class DeepSpaceVision:
         else:
             mode = cv2.RETR_LIST
         method = cv2.CHAIN_APPROX_SIMPLE
-        im2, contours, hierarchy =cv2.findContours(input, mode=mode, method=method)
+        contours, hierarchy = cv2.findContours(input, mode=mode, method=method)
         return contours
 
     @staticmethod
@@ -379,24 +478,101 @@ class DeepSpaceVision:
             output.append(contour)
         return output
     
-    # Gets the area of the contour
-    def getArea(con): 
-        return cv2.contourArea(con)
+# Gets the area of the contour
+def getArea(con): 
+    return cv2.contourArea(con)
     
-    # Gets the Y coordinate of the contour
-    def getYcoord(con):
-        M = cv2.moments(con)
-        cy = int(M['m01']/M['m00'])
-        return cy
-
-    # Gets the X coordinate of the contour
-    def getXcoord(con):
-        M = cv2.moments(con)
-        cy = int(M['m10']/M['m00'])
-        return cy
+# Finds the center coordinates of a contour
+def get_contour_coords(cnt):
+    M = cv2.moments(cnt)
+    if M["m00"] != 0:
+        cx = int(M["m10"] / M["m00"])
+        cy = int(M["m01"] / M["m00"])
+    else:
+        cx, cy = 0, 0
+    return cx, cy
+    
+# Find the leftmost, rightmost, topmost, and bottommost points of a contour
+def get_contour_extreme_points(cnt):
+    leftmost = tuple(cnt[cnt[:,:,0].argmin()][0])
+    rightmost = tuple(cnt[cnt[:,:,0].argmax()][0])
+    topmost = tuple(cnt[cnt[:,:,1].argmin()][0])
+    bottommost = tuple(cnt[cnt[:,:,1].argmax()][0])
+    
+    return leftmost, rightmost, topmost, bottommost
+    
+def get_contour_angle(cnt):
+    try:
+        # Fit an ellipse to the contour and find the angle
+        ellipse = (x, y), (MA, ma), angle = cv2.fitEllipse(cnt)
         
-    # Returns an array sorted by area from smallest to largest
-    def sortByArea(conts) : 
-        contourNum = len(conts) # Gets number of contours
-        sortedBy = sorted(conts, key=getArea) # sortedBy now has all the contours sorted by area
-        return sortedBy
+        if angle > 90:  # Maps the ellipse angle to [-90, 90] for trig functions
+            angle = angle-180
+        
+        return angle
+    except:
+        return 0
+    
+# Returns two points to draw a line through a target
+def line_through_contour(cnt):
+    cx, cy = get_contour_coords(cnt)
+    angle = get_contour_angle(cnt)
+    
+    px1 = int(cx + 400*math.cos(math.radians(90-angle)))
+    py1 = int(cy - 400*math.sin(math.radians(90-angle)))
+    
+    px2 = int(cx - 400*math.cos(math.radians(90-angle)))
+    py2 = int(cy + 400*math.sin(math.radians(90-angle)))
+    
+    return (px1, py1), (px2, py2)
+    
+# Returns an array representing an angled rectangle around a contour
+def angled_rectangle(cnt):
+    rect = cv2.minAreaRect(cnt)
+    box = cv2.boxPoints(rect)
+    box = np.int0(box)
+    
+    return box
+
+# Returns a rectangle that contains all contours in the list
+def box_contours(cnt_list):
+    leftmost = 319
+    rightmost = 0
+    topmost = 239
+    bottommost = 0
+    
+    for cnt in cnt_list:
+        left, right, top, bottom = get_contour_extreme_points(cnt)
+        
+        if left[0] < leftmost:
+            leftmost = left[0]
+        if right[0] > rightmost:
+            rightmost = right[0]
+        if top[1] < topmost:
+            topmost = top[1]
+        if bottom[1] > bottommost:
+            bottommost = bottom[1]
+    
+    return (leftmost, topmost, rightmost-leftmost, bottommost-topmost)
+    
+def compute_output_values(rvec, tvec):
+        '''Compute the necessary output distance and angles'''
+
+        # The tilt angle only affects the distance and angle1 calcs
+
+        x = tvec[0][0]
+        z = math.sin(0.0) * tvec[1][0] + math.cos(0.0) * tvec[2][0]
+
+        # distance in the horizontal plane between camera and target
+        distance = math.sqrt(x**2 + z**2)
+
+        # horizontal angle between camera center line and target
+        angle1 = math.degrees(math.atan2(x, z))
+
+        rot, _ = cv2.Rodrigues(rvec)
+        rot_inv = rot.transpose()
+        #pzero_world = np.matmul(rot_inv, -tvec)
+        #angle2 = math.atan2(pzero_world[0][0], pzero_world[2][0])
+        angle2 = 0.0
+
+        return distance, angle1, angle2
