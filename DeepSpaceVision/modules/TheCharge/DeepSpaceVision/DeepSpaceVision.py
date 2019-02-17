@@ -26,6 +26,8 @@ class DeepSpaceVision:
     # ###################################################################################################
     ## Constructor
     def __init__(self):
+        # Boolean
+        self.EDIT_IMAGE = True
     
         # 3D Reconstruction constants
         self.obj_points = [(-4.0, 0.0, 0.0),
@@ -37,19 +39,21 @@ class DeepSpaceVision:
                       (5.936295280756216, 0.5007600081088829, 0.0),
                       (7.313385303055644, -4.82405201397071, 0.0),
                       (5.377090022299429, -5.324812022079593, 0.0)]
-        '''
-        self.obj_points = [(-5.936295280756216, 0.5007600081088829, 0.0),
-                           (-5.377090022299429, -5.324812022079593, 0.0),
-                           (5.377090022299429, -5.324812022079593, 0.0),
-                           (5.377090022299429, -5.324812022079593, 0.0)]
-        '''
                       
         self.cam_matrix = [[251.14969233879845, 0.0, 160],
                       [0.0, 258.8135140705428, 120],
                       [0.0, 0.0, 1.0]]
                       
+        self.dist_coeff = [1.1082291807813722,
+                           -64.992034623241494,
+                           -0.023849353550161684,
+                           -0.022550316575808114,
+                           1954.505249457445]
+                           
+        # Distortion values currently not working: use empty list
         self.dist_coeff = []
         
+        # Change into numpy float32 type arrays
         self.obj_points = np.float32(self.obj_points)
         self.cam_matrix = np.float32(self.cam_matrix)
         self.dist_coeff = np.float32(self.dist_coeff)
@@ -61,7 +65,7 @@ class DeepSpaceVision:
         self.frame = 0
         
         # GRIP constants
-        self.__blur_radius = 1.0
+        self.__blur_radius = 0.6289311175076467
 
         self.blur_output = None
 
@@ -90,9 +94,9 @@ class DeepSpaceVision:
         self.normalize_output = None
 
         self.__hsv_threshold_input = self.normalize_output
-        self.__hsv_threshold_hue = [62.0, 94.9130331623807]
-        self.__hsv_threshold_saturation = [0.0, 255.0]
-        self.__hsv_threshold_value = [20, 255.0]
+        self.__hsv_threshold_hue = [64.10701515877801, 80.53474711861844]
+        self.__hsv_threshold_saturation = [220.0, 255.0]
+        self.__hsv_threshold_value = [75.41505716401612, 255.0]
 
         self.hsv_threshold_output = None
 
@@ -120,7 +124,7 @@ class DeepSpaceVision:
         self.find_contours_output = None
 
         self.__filter_contours_contours = self.find_contours_output
-        self.__filter_contours_min_area = 25.0
+        self.__filter_contours_min_area = 15.0
         self.__filter_contours_min_perimeter = 0.0
         self.__filter_contours_min_width = 0.0
         self.__filter_contours_max_width = 1000.0
@@ -129,7 +133,7 @@ class DeepSpaceVision:
         self.__filter_contours_solidity = [0.0, 100]
         self.__filter_contours_max_vertices = 1000000.0
         self.__filter_contours_min_vertices = 5.0
-        self.__filter_contours_min_ratio = 0.2
+        self.__filter_contours_min_ratio = 0.1
         self.__filter_contours_max_ratio = 0.9
 
         self.filter_contours_output = None
@@ -240,15 +244,16 @@ class DeepSpaceVision:
             # Store the contour information in a new list in order (contour, center, shape, angle)
             contourInfo.append((cnt, (cx, cy), (width, height), angle))
             
-            # Draw contour
-            cv2.drawContours(img, [cnt], 0, (255, 0, 0), 2)
-            
-            # Draw a circle around the center of the contour
-            cv2.circle(img, (cx, cy), 1, (0, 0, 0), 2)
-            
-            # Draw a line through the target
-            p1, p2 = line_through_contour(cnt)
-            cv2.line(img, p1, p2, (255, 255, 255), 1)
+            if self.EDIT_IMAGE:
+                # Draw contour
+                cv2.drawContours(img, [cnt], 0, (255, 0, 0), 2)
+                
+                # Draw a circle around the center of the contour
+                cv2.circle(img, (cx, cy), 1, (0, 0, 0), 2)
+                
+                # Draw a line through the target
+                p1, p2 = line_through_contour(cnt)
+                cv2.line(img, p1, p2, (255, 255, 255), 1)
         
         # Information to send over serial
         toSend = ""
@@ -275,35 +280,36 @@ class DeepSpaceVision:
                 img_points.append(r_right)
                 img_points.append(r_bottom)
                 
-                #img_points.append(r_top)
-                
-                print("IMAGE POINTS")
-                for pt in img_points:
-                    print(pt)
-                
                 img_points = np.float32(img_points)
                 ret, rvec, tvec = cv2.solvePnP(self.obj_points, img_points, self.cam_matrix, self.dist_coeff)
                 
                 if ret:
-                    distance, angle1, angle2 = compute_output_values(rvec, tvec)
-                    x = int((cx_l+cx_r)/2)
-                    angle1_px = math.degrees(math.atan( (160 - x) / 251.1496923 ))
-                    toSend += '{:.4}in | {:.4}dg '.format(distance, angle1) + '| pixel angle1: {:.4}'.format(angle1_px)
+                    distance, yaw, rotation = compute_output_values(rvec, tvec)
+                    c_x = int(np.mean([cx_l, cx_r]))
+                    c_y = int(np.mean([cy_l, cy_r]))
+                    # Yaw calculation from matrices is not as accurate, so it's recalculated here
+                    yaw = math.degrees(math.atan( (160 - c_x) / 251.1496923 ))
+                    
+                    # Append the target coordinates to the serial information
+                    if toSend != "":
+                        toSend = toSend + ","
+                    toSend += '{:.4},{:.4},{:.4}'.format(distance, yaw, rotation)
+                    
+                    if self.EDIT_IMAGE:           
+                        cv2.putText(img, "{:.4}\"".format(distance), (c_x, c_y), cv2.FONT_HERSHEY_SIMPLEX, 0.3, (255,255,255))
+                        cv2.putText(img, "{:.4}\"".format(yaw), (c_x, c_y+20), cv2.FONT_HERSHEY_SIMPLEX, 0.3, (255,255,255))
+                        cv2.putText(img, "{:.4}\"".format(rotation), (c_x, c_y+40), cv2.FONT_HERSHEY_SIMPLEX, 0.3, (255,255,255))
                 
-                # Draw a box around both contours
-                rx, ry, rw, rh = rect = box_contours([cnt_l, cnt_r])
-                cv2.rectangle(img, rect, (0, 255, 255), 2)
-                
-                # Find the center of the two targets
-                tar_x, tar_y = (int(rx+rw/2), int(ry+rh/2))
-                
-                # Draw a circle in the middle of both contours
-                cv2.circle(img, (tar_x, tar_y), 2, (255, 255, 255), 4)
-                
-                # Append the target coordinates to the serial information - first character should not be a "/"
-                '''if toSend != "":
-                    toSend = toSend + ","
-                toSend = toSend + "{},{}".format(tar_x, tar_y)'''
+                if self.EDIT_IMAGE:
+                    # Draw a box around both contours
+                    rx, ry, rw, rh = rect = box_contours([cnt_l, cnt_r])
+                    cv2.rectangle(img, rect, (0, 255, 255), 2)
+                    
+                    # Find the center of the two targets
+                    tar_x, tar_y = (int(rx+rw/2), int(ry+rh/2))
+                    
+                    # Draw a circle in the middle of both contours
+                    cv2.circle(img, (tar_x, tar_y), 2, (255, 255, 255), 4)
             
         # Don't send an empty string
         if toSend != "":
@@ -571,8 +577,19 @@ def compute_output_values(rvec, tvec):
 
         rot, _ = cv2.Rodrigues(rvec)
         rot_inv = rot.transpose()
-        #pzero_world = np.matmul(rot_inv, -tvec)
-        #angle2 = math.atan2(pzero_world[0][0], pzero_world[2][0])
-        angle2 = 0.0
+        pzero_world = matmul(rot_inv, -tvec)
+        angle2 = math.degrees(math.atan2(pzero_world[0][0], pzero_world[2][0]))
+        #angle2 = 0.0
 
         return distance, angle1, angle2
+
+def matmul(a, b):
+    '''Multiply two matrices and return the output as a list'''
+    
+    try:
+        zip_b = zip(*b)
+        zip_b = list(zip_b)
+        return [[sum(ele_a*ele_b for ele_a, ele_b in zip(row_a, col_b)) 
+                 for col_b in zip_b] for row_a in a]
+    except:
+        return [[]]
