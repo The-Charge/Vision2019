@@ -28,27 +28,31 @@ class DeepSpaceVision:
     def __init__(self):
         # Boolean
         self.EDIT_IMAGE = True
+        
+        self.CAMERA_HORIZONTAL_OFFSET_INCHES = -2.5     #2.5 inches to the left
     
         # 3D Reconstruction constants
-        self.obj_points = [(-4.0, 0.0, 0.0),
-                      (-5.936295280756216, 0.5007600081088829, 0.0),
-                      (-7.313385303055644, -4.82405201397071, 0.0),
-                      (-5.377090022299429, -5.324812022079593, 0.0),
+        self.obj_points = [(-4.0,               0.0,                0.0),
+                           (-5.936295280756216, 0.5007600081088829, 0.0),
+                           (-7.313385303055644, -4.82405201397071,  0.0),
+                           (-5.377090022299429, -5.324812022079593, 0.0),
                       
-                      (4.0, 0.0, 0.0),
-                      (5.936295280756216, 0.5007600081088829, 0.0),
-                      (7.313385303055644, -4.82405201397071, 0.0),
-                      (5.377090022299429, -5.324812022079593, 0.0)]
+                           (4.0,                0.0,                0.0),
+                           (5.936295280756216,  0.5007600081088829, 0.0),
+                           (7.313385303055644,  -4.82405201397071,  0.0),
+                           (5.377090022299429,  -5.324812022079593, 0.0)]
                       
-        self.cam_matrix = [[251.14969233879845, 0.0, 160],
-                      [0.0, 258.8135140705428, 120],
-                      [0.0, 0.0, 1.0]]
+        self.cam_matrix = [[251.14969233879845, 0.0,                160],
+                           [0.0,                258.8135140705428,  120],
+                           [0.0,                0.0,                1.0]]
                       
+        '''
         self.dist_coeff = [1.1082291807813722,
                            -64.992034623241494,
                            -0.023849353550161684,
                            -0.022550316575808114,
                            1954.505249457445]
+        '''
                            
         # Distortion values currently not working: use empty list
         self.dist_coeff = []
@@ -245,6 +249,7 @@ class DeepSpaceVision:
             contourInfo.append((cnt, (cx, cy), (width, height), angle))
             
             if self.EDIT_IMAGE:
+            
                 # Draw contour
                 cv2.drawContours(img, [cnt], 0, (255, 0, 0), 2)
                 
@@ -283,23 +288,6 @@ class DeepSpaceVision:
                 img_points = np.float32(img_points)
                 ret, rvec, tvec = cv2.solvePnP(self.obj_points, img_points, self.cam_matrix, self.dist_coeff)
                 
-                if ret:
-                    distance, yaw, rotation = compute_output_values(rvec, tvec)
-                    c_x = int(np.mean([cx_l, cx_r]))
-                    c_y = int(np.mean([cy_l, cy_r]))
-                    # Yaw calculation from matrices is not as accurate, so it's recalculated here
-                    yaw = math.degrees(math.atan( (160 - c_x) / 251.1496923 ))
-                    
-                    # Append the target coordinates to the serial information
-                    if toSend != "":
-                        toSend = toSend + ","
-                    toSend += '{:.4},{:.4},{:.4}'.format(distance, yaw, rotation)
-                    
-                    if self.EDIT_IMAGE:           
-                        cv2.putText(img, "{:.4}\"".format(distance), (c_x, c_y), cv2.FONT_HERSHEY_SIMPLEX, 0.3, (255,255,255))
-                        cv2.putText(img, "{:.4}\"".format(yaw), (c_x, c_y+20), cv2.FONT_HERSHEY_SIMPLEX, 0.3, (255,255,255))
-                        cv2.putText(img, "{:.4}\"".format(rotation), (c_x, c_y+40), cv2.FONT_HERSHEY_SIMPLEX, 0.3, (255,255,255))
-                
                 if self.EDIT_IMAGE:
                     # Draw a box around both contours
                     rx, ry, rw, rh = rect = box_contours([cnt_l, cnt_r])
@@ -310,7 +298,24 @@ class DeepSpaceVision:
                     
                     # Draw a circle in the middle of both contours
                     cv2.circle(img, (tar_x, tar_y), 2, (255, 255, 255), 4)
-            
+                    
+                if ret:
+                    distance, yaw, rotation = compute_output_values(rvec, tvec)
+                    c_x = int(np.mean([cx_l, cx_r]))
+                    c_y = int(np.mean([cy_l, cy_r]))
+                    # yaw recalculation: only works if camera is centered
+                    #yaw = math.degrees(math.atan( (160 - c_x) / 251.1496923 ))
+                    
+                    # Append the target coordinates to the serial information
+                    if toSend != "":
+                        toSend = toSend + ","
+                    toSend += '{:.4},{:.4},{:.4}'.format(distance, yaw, rotation)
+                    
+                    if self.EDIT_IMAGE:
+                        cv2.putText(img, "{:.4}\"".format(distance), (c_x, c_y), cv2.FONT_HERSHEY_SIMPLEX, 0.3, (255,255,255))
+                        cv2.putText(img, "{:.4}\"".format(yaw), (c_x, c_y+20), cv2.FONT_HERSHEY_SIMPLEX, 0.3, (255,255,255))
+                        cv2.putText(img, "{:.4}\"".format(rotation), (c_x, c_y+40), cv2.FONT_HERSHEY_SIMPLEX, 0.3, (255,255,255))
+                
         # Don't send an empty string
         if toSend != "":
             jevois.sendSerial(toSend)
@@ -565,9 +570,10 @@ def compute_output_values(rvec, tvec):
         '''Compute the necessary output distance and angles'''
 
         # The tilt angle only affects the distance and angle1 calcs
+        camera_tilt = 0.0
 
-        x = tvec[0][0]
-        z = math.sin(0.0) * tvec[1][0] + math.cos(0.0) * tvec[2][0]
+        x = tvec[0][0] - self.CAMERA_HORIZONTAL_OFFSET_INCHES
+        z = math.sin(camera_tilt) * tvec[1][0] + math.cos(camera_tilt) * tvec[2][0]
 
         # distance in the horizontal plane between camera and target
         distance = math.sqrt(x**2 + z**2)
@@ -575,11 +581,11 @@ def compute_output_values(rvec, tvec):
         # horizontal angle between camera center line and target
         angle1 = math.degrees(math.atan2(x, z))
 
+        # horizontal rotation angle of target
         rot, _ = cv2.Rodrigues(rvec)
         rot_inv = rot.transpose()
         pzero_world = matmul(rot_inv, -tvec)
         angle2 = math.degrees(math.atan2(pzero_world[0][0], pzero_world[2][0]))
-        #angle2 = 0.0
 
         return distance, angle1, angle2
 
